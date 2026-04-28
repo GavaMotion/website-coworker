@@ -92,9 +92,11 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-  let currentMessages = [
+// Keep only the last 10 messages to avoid token limit errors
+const trimmed = messages.slice(-10);
+let currentMessages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+    ...trimmed.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
   ];
 
   try {
