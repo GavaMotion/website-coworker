@@ -65,21 +65,36 @@ async function writeRemoteFile(remotePath, content) {
 }
 
 // ── Download a file from URL following redirects ──────────────────────────────
-function downloadFile(url, destPath) {
+function downloadFile(url, destPath, redirectCount = 0) {
   return new Promise((resolve, reject) => {
+    if (redirectCount > 10) return reject(new Error('Too many redirects'));
     const proto = url.startsWith('https') ? https : http;
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/*,*/*',
+      }
+    };
     const file = fs.createWriteStream(destPath);
-    proto.get(url, (res) => {
-      // Follow redirects
-      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303) {
+    proto.get(url, options, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
         file.close();
-        fs.unlinkSync(destPath);
-        return downloadFile(res.headers.location, destPath).then(resolve).catch(reject);
+        try { fs.unlinkSync(destPath); } catch {}
+        const location = res.headers.location;
+        if (!location) return reject(new Error('Redirect with no location'));
+        const nextUrl = location.startsWith('http') ? location : `https://drive.google.com${location}`;
+        return downloadFile(nextUrl, destPath, redirectCount + 1).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        try { fs.unlinkSync(destPath); } catch {}
+        return reject(new Error(`Download failed with status ${res.statusCode}`));
       }
       res.pipe(file);
       file.on('finish', () => file.close(resolve));
+      file.on('error', reject);
     }).on('error', (err) => {
-      fs.unlinkSync(destPath);
+      try { fs.unlinkSync(destPath); } catch {}
       reject(err);
     });
   });
@@ -157,7 +172,17 @@ app.post('/api/drive-image', async (req, res) => {
   const tmpFile = path.join(os.tmpdir(), safeFilename);
 
   try {
+    console.log(`Downloading from Drive: ${downloadUrl}`);
     await downloadFile(downloadUrl, tmpFile);
+
+    const stat = fs.statSync(tmpFile);
+    console.log(`Downloaded ${stat.size} bytes, uploading to Hostinger...`);
+
+    if (stat.size < 100) {
+      const content = fs.readFileSync(tmpFile, 'utf8');
+      fs.unlinkSync(tmpFile);
+      return res.status(500).json({ error: 'Drive returned invalid file. Make sure the file is shared publicly. Content: ' + content.slice(0, 200) });
+    }
 
     const ssh = new NodeSSH();
     await ssh.connect(getSSHConfig());
@@ -167,8 +192,11 @@ app.post('/api/drive-image', async (req, res) => {
     fs.unlinkSync(tmpFile);
     ssh.dispose();
 
+    console.log(`Uploaded to ${remotePath}`);
     res.json({ success: true, path: remotePath, url: `/jewelry_images/${safeFilename}`, filename: safeFilename });
   } catch (err) {
+    console.error('drive-image error:', err.message);
+    try { fs.unlinkSync(tmpFile); } catch {}
     res.status(500).json({ error: err.message });
   }
 });
