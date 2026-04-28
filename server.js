@@ -23,6 +23,30 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/ping', (req, res) => res.json({ ok: true }));
 
+// ── SSH test endpoint ─────────────────────────────────────────────────────────
+app.get('/api/ssh-test', async (req, res) => {
+  const ssh = new NodeSSH();
+  try {
+    await ssh.connect({
+      host: process.env.SSH_HOST,
+      port: parseInt(process.env.SSH_PORT) || 65002,
+      username: process.env.SSH_USER,
+      password: process.env.SSH_PASSWORD,
+      readyTimeout: 10000,
+    });
+    const result = await ssh.execCommand('whoami');
+    ssh.dispose();
+    res.json({ success: true, user: result.stdout });
+  } catch (err) {
+    res.json({ success: false, error: err.message, config: {
+      host: process.env.SSH_HOST,
+      port: process.env.SSH_PORT,
+      user: process.env.SSH_USER,
+      hasPassword: !!process.env.SSH_PASSWORD,
+    }});
+  }
+});
+
 function getSSHConfig() {
   const config = {
     host: process.env.SSH_HOST,
