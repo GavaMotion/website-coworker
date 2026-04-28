@@ -23,17 +23,10 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/ping', (req, res) => res.json({ ok: true }));
 
-// ── SSH test endpoint ─────────────────────────────────────────────────────────
 app.get('/api/ssh-test', async (req, res) => {
   const ssh = new NodeSSH();
   try {
-    await ssh.connect({
-      host: process.env.SSH_HOST,
-      port: parseInt(process.env.SSH_PORT) || 65002,
-      username: process.env.SSH_USER,
-      password: process.env.SSH_PASSWORD,
-      readyTimeout: 10000,
-    });
+    await ssh.connect(getSSHConfig());
     const result = await ssh.execCommand('whoami');
     ssh.dispose();
     res.json({ success: true, user: result.stdout });
@@ -42,6 +35,7 @@ app.get('/api/ssh-test', async (req, res) => {
       host: process.env.SSH_HOST,
       port: process.env.SSH_PORT,
       user: process.env.SSH_USER,
+      hasKey: !!process.env.SSH_KEY_BASE64 || !!process.env.SSH_PRIVATE_KEY,
       hasPassword: !!process.env.SSH_PASSWORD,
     }});
   }
@@ -53,28 +47,24 @@ function getSSHConfig() {
     port: parseInt(process.env.SSH_PORT) || 65002,
     username: process.env.SSH_USER,
   };
+
+  const b64Key = process.env.SSH_KEY_BASE64;
   const rawKey = process.env.SSH_PRIVATE_KEY;
   const password = process.env.SSH_PASSWORD;
-  
-  if (rawKey) {
-    // Handle both literal 
- and real newlines
-    const normalized = rawKey
-      .replace(/\n/g, '
-')       // literal 
- → real newline
-      .replace(/
-/g, '
-')      // Windows CRLF → LF
-      .trim();
-    config.privateKey = normalized;
-    console.log('SSH: using private key, length:', normalized.length, 'starts with:', normalized.slice(0, 30));
+
+  if (b64Key) {
+    config.privateKey = Buffer.from(b64Key, 'base64').toString('utf8');
+    console.log('SSH: using base64 key');
+  } else if (rawKey) {
+    config.privateKey = rawKey.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim();
+    console.log('SSH: using raw key, length:', config.privateKey.length);
   } else if (password) {
     config.password = password;
-    console.log('SSH: using password auth');
+    console.log('SSH: using password');
   } else {
-    console.log('SSH: NO AUTH METHOD CONFIGURED');
+    console.log('SSH: no auth configured');
   }
+
   return config;
 }
 
@@ -94,7 +84,7 @@ async function writeRemoteFile(remotePath, content) {
   const ssh = new NodeSSH();
   try {
     await ssh.connect(getSSHConfig());
-    const tmpFile = path.join(os.tmpdir(), `coworker_${Date.now()}`);
+    const tmpFile = path.join(os.tmpdir(), 'coworker_' + Date.now());
     fs.writeFileSync(tmpFile, content, 'utf8');
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
@@ -105,8 +95,8 @@ async function writeRemoteFile(remotePath, content) {
   }
 }
 
-// ── Download a file from URL following redirects ──────────────────────────────
-function downloadFile(url, destPath, redirectCount = 0) {
+function downloadFile(url, destPath, redirectCount) {
+  redirectCount = redirectCount || 0;
   return new Promise((resolve, reject) => {
     if (redirectCount > 10) return reject(new Error('Too many redirects'));
     const proto = url.startsWith('https') ? https : http;
@@ -120,28 +110,27 @@ function downloadFile(url, destPath, redirectCount = 0) {
     proto.get(url, options, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
         file.close();
-        try { fs.unlinkSync(destPath); } catch {}
+        try { fs.unlinkSync(destPath); } catch (e) {}
         const location = res.headers.location;
         if (!location) return reject(new Error('Redirect with no location'));
-        const nextUrl = location.startsWith('http') ? location : `https://drive.google.com${location}`;
+        const nextUrl = location.startsWith('http') ? location : 'https://drive.google.com' + location;
         return downloadFile(nextUrl, destPath, redirectCount + 1).then(resolve).catch(reject);
       }
       if (res.statusCode !== 200) {
         file.close();
-        try { fs.unlinkSync(destPath); } catch {}
-        return reject(new Error(`Download failed with status ${res.statusCode}`));
+        try { fs.unlinkSync(destPath); } catch (e) {}
+        return reject(new Error('Download failed with status ' + res.statusCode));
       }
       res.pipe(file);
       file.on('finish', () => file.close(resolve));
       file.on('error', reject);
     }).on('error', (err) => {
-      try { fs.unlinkSync(destPath); } catch {}
+      try { fs.unlinkSync(destPath); } catch (e) {}
       reject(err);
     });
   });
 }
 
-// ── Extract Google Drive file ID from any Drive URL ───────────────────────────
 function extractDriveFileId(url) {
   const patterns = [
     /\/file\/d\/([a-zA-Z0-9_-]+)/,
@@ -155,20 +144,19 @@ function extractDriveFileId(url) {
   return null;
 }
 
-// ── List files from Drive folder using API key ───────────────────────────────
-app.get('/api/drive-list', async (req, res) => {
+app.get('/api/drive-list', (req, res) => {
   const folderId = process.env.DRIVE_FOLDER_ID;
-  const apiKey   = process.env.GOOGLE_API_KEY;
+  const apiKey = process.env.GOOGLE_API_KEY;
   if (!folderId) return res.status(400).json({ error: 'DRIVE_FOLDER_ID not set' });
-  if (!apiKey)   return res.status(400).json({ error: 'GOOGLE_API_KEY not set' });
+  if (!apiKey) return res.status(400).json({ error: 'GOOGLE_API_KEY not set' });
 
-  const query = encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed=false`);
+  const query = encodeURIComponent("'" + folderId + "' in parents and mimeType contains 'image/' and trashed=false");
   const fields = encodeURIComponent('files(id,name,mimeType)');
-  const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=${fields}&key=${apiKey}`;
+  const url = 'https://www.googleapis.com/drive/v3/files?q=' + query + '&fields=' + fields + '&key=' + apiKey;
 
   https.get(url, (response) => {
     let data = '';
-    response.on('data', chunk => data += chunk);
+    response.on('data', (chunk) => { data += chunk; });
     response.on('end', () => {
       try {
         const parsed = JSON.parse(data);
@@ -178,66 +166,62 @@ app.get('/api/drive-list', async (req, res) => {
         res.status(500).json({ error: 'Could not parse response: ' + err.message });
       }
     });
-  }).on('error', err => res.status(500).json({ error: err.message }));
+  }).on('error', (err) => res.status(500).json({ error: err.message }));
 });
 
-// ── Direct image upload endpoint ──────────────────────────────────────────────
 app.post('/api/upload-image', async (req, res) => {
   const { base64_data, filename } = req.body;
   if (!base64_data || !filename) return res.status(400).json({ error: 'Missing data' });
   const ssh = new NodeSSH();
   try {
     await ssh.connect(getSSHConfig());
-    const remotePath = `${process.env.SITE_ROOT}/jewelry_images/${filename}`;
-    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/jewelry_images`);
+    const remotePath = process.env.SITE_ROOT + '/jewelry_images/' + filename;
+    await ssh.execCommand('mkdir -p ' + process.env.SITE_ROOT + '/jewelry_images');
     const tmpFile = path.join(os.tmpdir(), filename);
     fs.writeFileSync(tmpFile, Buffer.from(base64_data, 'base64'));
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
     ssh.dispose();
-    res.json({ success: true, path: remotePath, url: `/jewelry_images/${filename}` });
+    res.json({ success: true, path: remotePath, url: '/jewelry_images/' + filename });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── Google Drive image fetch + upload endpoint ────────────────────────────────
 app.post('/api/drive-image', async (req, res) => {
   const { driveUrl, fileId: directFileId, filename } = req.body;
-  
   const fileId = directFileId || (driveUrl ? extractDriveFileId(driveUrl) : null);
   if (!fileId) return res.status(400).json({ error: 'Missing file ID or Drive URL' });
 
-  const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-  const safeFilename = filename || `drive-image-${Date.now()}.jpg`;
+  const downloadUrl = 'https://drive.google.com/uc?export=download&id=' + fileId;
+  const safeFilename = filename || ('drive-image-' + Date.now() + '.jpg');
   const tmpFile = path.join(os.tmpdir(), safeFilename);
 
   try {
-    console.log(`Downloading from Drive: ${downloadUrl}`);
+    console.log('Downloading from Drive: ' + downloadUrl);
     await downloadFile(downloadUrl, tmpFile);
-
     const stat = fs.statSync(tmpFile);
-    console.log(`Downloaded ${stat.size} bytes, uploading to Hostinger...`);
+    console.log('Downloaded ' + stat.size + ' bytes');
 
     if (stat.size < 100) {
       const content = fs.readFileSync(tmpFile, 'utf8');
       fs.unlinkSync(tmpFile);
-      return res.status(500).json({ error: 'Drive returned invalid file. Make sure the file is shared publicly. Content: ' + content.slice(0, 200) });
+      return res.status(500).json({ error: 'Drive returned invalid file: ' + content.slice(0, 200) });
     }
 
     const ssh = new NodeSSH();
     await ssh.connect(getSSHConfig());
-    const remotePath = `${process.env.SITE_ROOT}/jewelry_images/${safeFilename}`;
-    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/jewelry_images`);
+    const remotePath = process.env.SITE_ROOT + '/jewelry_images/' + safeFilename;
+    await ssh.execCommand('mkdir -p ' + process.env.SITE_ROOT + '/jewelry_images');
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
     ssh.dispose();
 
-    console.log(`Uploaded to ${remotePath}`);
-    res.json({ success: true, path: remotePath, url: `/jewelry_images/${safeFilename}`, filename: safeFilename });
+    console.log('Uploaded to ' + remotePath);
+    res.json({ success: true, path: remotePath, url: '/jewelry_images/' + safeFilename, filename: safeFilename });
   } catch (err) {
     console.error('drive-image error:', err.message);
-    try { fs.unlinkSync(tmpFile); } catch {}
+    try { fs.unlinkSync(tmpFile); } catch (e) {}
     res.status(500).json({ error: err.message });
   }
 });
@@ -247,23 +231,19 @@ const tools = [
   { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Full absolute path on the server' }, content: { type: 'string', description: 'Full file content' } }, required: ['path', 'content'] } } },
 ];
 
-const SYSTEM_PROMPT = `You are a Website Coworker — an autonomous AI agent with SSH access to a Hostinger web server.
-Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}
-Your responsibilities: update HTML pages, manage files.
-Rules: always back up files before editing (cp file.html file.html.bak), verify changes after uploading, never delete files unless told to, report what changed after every task.
-Note: images are uploaded directly to the server before you receive the message into /jewelry_images/ folder. When the user says an image was uploaded, it already exists at the stated path — just insert the correct <img> tag into the HTML using the /jewelry_images/ path.`;
+const SYSTEM_PROMPT = 'You are a Website Coworker — an autonomous AI agent with SSH access to a Hostinger web server. Site root: ' + (process.env.SITE_ROOT || '/home/user/public_html') + '. Images folder: ' + (process.env.SITE_ROOT || '/home/user/public_html') + '/jewelry_images/. Your responsibilities: update HTML pages, manage files. Rules: always back up files before editing, verify changes after uploading, never delete files unless told to, report what changed after every task. When a user says an image was uploaded, it already exists on the server — just insert the correct img tag using the /jewelry_images/ path.';
 
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
 
   const trimmed = messages.slice(-10);
   let currentMessages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...trimmed.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+    ...trimmed.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
   ];
 
   try {
@@ -304,4 +284,4 @@ app.post('/api/chat', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Website Coworker running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log('Website Coworker running on http://localhost:' + PORT));
