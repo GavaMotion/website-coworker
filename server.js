@@ -99,59 +99,27 @@ function extractDriveFileId(url) {
   return null;
 }
 
-// ── List files from public Drive folder (no API key needed) ─────────────────
+// ── List files from Drive folder using API key ───────────────────────────────
 app.get('/api/drive-list', async (req, res) => {
   const folderId = process.env.DRIVE_FOLDER_ID;
+  const apiKey   = process.env.GOOGLE_API_KEY;
   if (!folderId) return res.status(400).json({ error: 'DRIVE_FOLDER_ID not set' });
+  if (!apiKey)   return res.status(400).json({ error: 'GOOGLE_API_KEY not set' });
 
-  const url = `https://drive.google.com/drive/folders/${folderId}`;
-  const options = {
-    hostname: 'drive.google.com',
-    path: `/drive/folders/${folderId}`,
-    method: 'GET',
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'text/html',
-    }
-  };
+  const query = encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed=false`);
+  const fields = encodeURIComponent('files(id,name,mimeType)');
+  const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=${fields}&key=${apiKey}`;
 
-  https.get(options, (response) => {
-    let html = '';
-    response.on('data', chunk => html += chunk);
+  https.get(url, (response) => {
+    let data = '';
+    response.on('data', chunk => data += chunk);
     response.on('end', () => {
       try {
-        // Extract file entries from Drive's embedded JSON data
-        // Drive embeds file data in a pattern like ["FILE_ID","NAME","mimeType",...]
-        const imageTypes = ['image/jpeg','image/jpg','image/png','image/gif','image/webp'];
-        const files = [];
-        const seen = new Set();
-
-        // Pattern to find file IDs and names in the embedded JSON
-        const pattern = /\["([-\w]{25,})"(?:,null)*,"([^"]+)","(image\/[^"]+)"/g;
-        let match;
-        while ((match = pattern.exec(html)) !== null) {
-          const [, id, name, mimeType] = match;
-          if (!seen.has(id) && imageTypes.includes(mimeType)) {
-            seen.add(id);
-            files.push({ id, name, mimeType });
-          }
-        }
-
-        if (files.length > 0) {
-          return res.json({ files });
-        }
-
-        // Fallback: extract any file IDs referenced in thumbnail URLs
-        const thumbPattern = /thumbnail\?id=([-\w]{25,})/g;
-        const namePattern = /"([^"]+\.(jpg|jpeg|png|gif|webp))"/gi;
-        const ids = [];
-        while ((match = thumbPattern.exec(html)) !== null) {
-          if (!seen.has(match[1])) { seen.add(match[1]); ids.push(match[1]); }
-        }
-        const fallbackFiles = ids.map((id, i) => ({ id, name: `image-${i+1}.jpg`, mimeType: 'image/jpeg' }));
-        res.json({ files: fallbackFiles });
+        const parsed = JSON.parse(data);
+        if (parsed.error) return res.status(400).json({ error: parsed.error.message });
+        res.json({ files: parsed.files || [] });
       } catch (err) {
-        res.status(500).json({ error: 'Could not parse folder: ' + err.message });
+        res.status(500).json({ error: 'Could not parse response: ' + err.message });
       }
     });
   }).on('error', err => res.status(500).json({ error: err.message }));
