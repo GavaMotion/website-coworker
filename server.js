@@ -132,14 +132,14 @@ app.post('/api/upload-image', async (req, res) => {
   const ssh = new NodeSSH();
   try {
     await ssh.connect(getSSHConfig());
-    const remotePath = `${process.env.SITE_ROOT}/images/${filename}`;
-    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/images`);
+    const remotePath = `${process.env.SITE_ROOT}/jewelry_images/${filename}`;
+    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/jewelry_images`);
     const tmpFile = path.join(os.tmpdir(), filename);
     fs.writeFileSync(tmpFile, Buffer.from(base64_data, 'base64'));
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
     ssh.dispose();
-    res.json({ success: true, path: remotePath, url: `/images/${filename}` });
+    res.json({ success: true, path: remotePath, url: `/jewelry_images/${filename}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -161,13 +161,13 @@ app.post('/api/drive-image', async (req, res) => {
 
     const ssh = new NodeSSH();
     await ssh.connect(getSSHConfig());
-    const remotePath = `${process.env.SITE_ROOT}/images/${safeFilename}`;
-    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/images`);
+    const remotePath = `${process.env.SITE_ROOT}/jewelry_images/${safeFilename}`;
+    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/jewelry_images`);
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
     ssh.dispose();
 
-    res.json({ success: true, path: remotePath, url: `/images/${safeFilename}`, filename: safeFilename });
+    res.json({ success: true, path: remotePath, url: `/jewelry_images/${safeFilename}`, filename: safeFilename });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -182,7 +182,7 @@ const SYSTEM_PROMPT = `You are a Website Coworker — an autonomous AI agent wit
 Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}
 Your responsibilities: update HTML pages, manage files.
 Rules: always back up files before editing (cp file.html file.html.bak), verify changes after uploading, never delete files unless told to, report what changed after every task.
-Note: images are uploaded directly to the server before you receive the message. When the user says an image was uploaded, it already exists at the stated path — just insert the correct <img> tag into the HTML.`;
+Note: images are uploaded directly to the server before you receive the message into /jewelry_images/ folder. When the user says an image was uploaded, it already exists at the stated path — just insert the correct <img> tag into the HTML using the /jewelry_images/ path.`;
 
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
