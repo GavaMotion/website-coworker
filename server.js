@@ -4,6 +4,8 @@ const { NodeSSH } = require('node-ssh');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 require('dotenv').config();
 
 const app = express();
@@ -62,16 +64,49 @@ async function writeRemoteFile(remotePath, content) {
   }
 }
 
-// ── Direct image upload endpoint (bypasses Groq entirely) ────────────────────
+// ── Download a file from URL following redirects ──────────────────────────────
+function downloadFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http;
+    const file = fs.createWriteStream(destPath);
+    proto.get(url, (res) => {
+      // Follow redirects
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303) {
+        file.close();
+        fs.unlinkSync(destPath);
+        return downloadFile(res.headers.location, destPath).then(resolve).catch(reject);
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', (err) => {
+      fs.unlinkSync(destPath);
+      reject(err);
+    });
+  });
+}
+
+// ── Extract Google Drive file ID from any Drive URL ───────────────────────────
+function extractDriveFileId(url) {
+  const patterns = [
+    /\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /id=([a-zA-Z0-9_-]+)/,
+    /\/d\/([a-zA-Z0-9_-]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// ── Direct image upload endpoint ──────────────────────────────────────────────
 app.post('/api/upload-image', async (req, res) => {
   const { base64_data, filename } = req.body;
   if (!base64_data || !filename) return res.status(400).json({ error: 'Missing data' });
-
   const ssh = new NodeSSH();
   try {
     await ssh.connect(getSSHConfig());
     const remotePath = `${process.env.SITE_ROOT}/images/${filename}`;
-    // Ensure images directory exists
     await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/images`);
     const tmpFile = path.join(os.tmpdir(), filename);
     fs.writeFileSync(tmpFile, Buffer.from(base64_data, 'base64'));
@@ -84,14 +119,43 @@ app.post('/api/upload-image', async (req, res) => {
   }
 });
 
+// ── Google Drive image fetch + upload endpoint ────────────────────────────────
+app.post('/api/drive-image', async (req, res) => {
+  const { driveUrl, filename } = req.body;
+  if (!driveUrl) return res.status(400).json({ error: 'Missing Drive URL' });
+
+  const fileId = extractDriveFileId(driveUrl);
+  if (!fileId) return res.status(400).json({ error: 'Could not extract file ID from URL' });
+
+  const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+  const safeFilename = filename || `drive-image-${Date.now()}.jpg`;
+  const tmpFile = path.join(os.tmpdir(), safeFilename);
+
+  try {
+    await downloadFile(downloadUrl, tmpFile);
+
+    const ssh = new NodeSSH();
+    await ssh.connect(getSSHConfig());
+    const remotePath = `${process.env.SITE_ROOT}/images/${safeFilename}`;
+    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/images`);
+    await ssh.putFile(tmpFile, remotePath);
+    fs.unlinkSync(tmpFile);
+    ssh.dispose();
+
+    res.json({ success: true, path: remotePath, url: `/images/${safeFilename}`, filename: safeFilename });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const tools = [
   { type: 'function', function: { name: 'run_ssh_command', description: 'Run a shell command on the Hostinger server via SSH.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Shell command to execute' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first with run_ssh_command.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Full absolute path on the server' }, content: { type: 'string', description: 'Full file content' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Full absolute path on the server' }, content: { type: 'string', description: 'Full file content' } }, required: ['path', 'content'] } } },
 ];
 
 const SYSTEM_PROMPT = `You are a Website Coworker — an autonomous AI agent with SSH access to a Hostinger web server.
 Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}
-Your responsibilities: update HTML pages, manage files. 
+Your responsibilities: update HTML pages, manage files.
 Rules: always back up files before editing (cp file.html file.html.bak), verify changes after uploading, never delete files unless told to, report what changed after every task.
 Note: images are uploaded directly to the server before you receive the message. When the user says an image was uploaded, it already exists at the stated path — just insert the correct <img> tag into the HTML.`;
 

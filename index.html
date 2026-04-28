@@ -197,13 +197,35 @@
   </div>
 
   <div id="input-area">
-    <label class="icon-btn" for="file-input" title="Attach image">
+    <label class="icon-btn" for="file-input" title="Attach image from device">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
         <polyline points="21 15 16 10 5 21"/>
       </svg>
     </label>
     <input type="file" id="file-input" accept="image/*" />
+    <button class="icon-btn" id="drive-btn" title="Use image from Google Drive">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M7.71 3.5L1.15 15l3.43 6 6.56-11.5L7.71 3.5zm8.58 0h-6.86l6.57 11.5h6.86L16.29 3.5zM12 13.5L8.57 21h6.86L12 13.5z"/>
+      </svg>
+    </button>
+
+    <!-- Drive URL modal -->
+    <div id="drive-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:100%;max-width:480px;">
+        <h3 style="margin-bottom:8px;font-size:1rem;">Import from Google Drive</h3>
+        <p style="color:var(--muted);font-size:0.85rem;margin-bottom:16px;">Open your Drive folder, right-click an image → <strong>Share → Copy link</strong>, then paste it below.</p>
+        <input id="drive-url-input" type="text" placeholder="Paste Google Drive link here…"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;outline:none;margin-bottom:12px;" />
+        <input id="drive-filename-input" type="text" placeholder="Filename to save as (e.g. ring-gold.jpg)"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;outline:none;margin-bottom:16px;" />
+        <div style="display:flex;gap:10px;">
+          <button id="drive-import-btn" style="flex:1;background:var(--green);color:#000;border:none;padding:10px;border-radius:var(--radius);font-weight:600;cursor:pointer;">Import Image</button>
+          <button id="drive-cancel-btn" style="flex:1;background:none;border:1px solid var(--border);color:var(--text);padding:10px;border-radius:var(--radius);cursor:pointer;">Cancel</button>
+        </div>
+        <div id="drive-status" style="margin-top:12px;font-size:0.85rem;color:var(--muted);display:none;"></div>
+      </div>
+    </div>
 
     <textarea id="msg-input" placeholder="Tell your coworker what to update…" rows="1"></textarea>
 
@@ -477,6 +499,67 @@
   }
 
   let currentToolDiv = null;
+
+  // ── Google Drive import ──────────────────────────────────────────────────
+  const driveBtn       = document.getElementById('drive-btn');
+  const driveModal     = document.getElementById('drive-modal');
+  const driveUrlInput  = document.getElementById('drive-url-input');
+  const driveFilename  = document.getElementById('drive-filename-input');
+  const driveImport    = document.getElementById('drive-import-btn');
+  const driveCancel    = document.getElementById('drive-cancel-btn');
+  const driveStatus    = document.getElementById('drive-status');
+
+  driveBtn.addEventListener('click', () => {
+    driveModal.style.display = 'flex';
+    driveUrlInput.focus();
+  });
+  driveCancel.addEventListener('click', () => {
+    driveModal.style.display = 'none';
+    driveUrlInput.value = '';
+    driveFilename.value = '';
+    driveStatus.style.display = 'none';
+  });
+
+  driveImport.addEventListener('click', async () => {
+    const url = driveUrlInput.value.trim();
+    const filename = driveFilename.value.trim() || `drive-image-${Date.now()}.jpg`;
+    if (!url) return;
+
+    driveStatus.style.display = 'block';
+    driveStatus.style.color = 'var(--muted)';
+    driveStatus.textContent = '⏳ Downloading from Drive and uploading to server…';
+    driveImport.disabled = true;
+
+    try {
+      const res = await fetch('/api/drive-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-password': password },
+        body: JSON.stringify({ driveUrl: url, filename }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        driveStatus.style.color = 'var(--green)';
+        driveStatus.textContent = `✅ Uploaded to ${data.url}`;
+        // Auto-send message telling coworker about the image
+        setTimeout(() => {
+          driveModal.style.display = 'none';
+          driveUrlInput.value = '';
+          driveFilename.value = '';
+          driveStatus.style.display = 'none';
+          input.value = `Image has been uploaded to the server at: ${data.path} (URL: ${data.url}). Please insert it into the appropriate place on the page with a proper <img> tag.`;
+          input.dispatchEvent(new Event('input'));
+          input.focus();
+        }, 1200);
+      } else {
+        driveStatus.style.color = 'var(--error)';
+        driveStatus.textContent = `❌ Error: ${data.error}`;
+      }
+    } catch (err) {
+      driveStatus.style.color = 'var(--error)';
+      driveStatus.textContent = `❌ ${err.message}`;
+    }
+    driveImport.disabled = false;
+  });
 </script>
 </body>
 </html>
