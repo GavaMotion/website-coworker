@@ -53,10 +53,27 @@ function getSSHConfig() {
     port: parseInt(process.env.SSH_PORT) || 65002,
     username: process.env.SSH_USER,
   };
-  if (process.env.SSH_PRIVATE_KEY) {
-    config.privateKey = process.env.SSH_PRIVATE_KEY.replace(/\\n/g, '\n');
-  } else if (process.env.SSH_PASSWORD) {
-    config.password = process.env.SSH_PASSWORD;
+  const rawKey = process.env.SSH_PRIVATE_KEY;
+  const password = process.env.SSH_PASSWORD;
+  
+  if (rawKey) {
+    // Handle both literal 
+ and real newlines
+    const normalized = rawKey
+      .replace(/\n/g, '
+')       // literal 
+ → real newline
+      .replace(/
+/g, '
+')      // Windows CRLF → LF
+      .trim();
+    config.privateKey = normalized;
+    console.log('SSH: using private key, length:', normalized.length, 'starts with:', normalized.slice(0, 30));
+  } else if (password) {
+    config.password = password;
+    console.log('SSH: using password auth');
+  } else {
+    console.log('SSH: NO AUTH METHOD CONFIGURED');
   }
   return config;
 }
