@@ -217,7 +217,7 @@
           <h3 style="font-size:1rem;">📁 Drive Folder</h3>
           <button id="drive-cancel-btn" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;">✕</button>
         </div>
-        <div id="drive-gallery" style="overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;min-height:100px;">
+        <div id="drive-gallery" style="overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:4px;min-height:100px;align-content:start;">
           <div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:20px;">Loading images…</div>
         </div>
         <div id="drive-status" style="margin-top:12px;font-size:0.85rem;color:var(--muted);display:none;"></div>
@@ -526,12 +526,16 @@
       driveGallery.innerHTML = '';
       for (const file of data.files) {
         const thumb = document.createElement('div');
-        thumb.style.cssText = 'cursor:pointer;border:2px solid var(--border);border-radius:8px;overflow:hidden;aspect-ratio:1;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;';
+        thumb.style.cssText = 'cursor:pointer;border:2px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg);display:flex;flex-direction:column;transition:border-color 0.2s;';
+        thumb.onmouseover = () => thumb.style.borderColor = 'var(--green)';
+        thumb.onmouseout  = () => thumb.style.borderColor = 'var(--border)';
         thumb.innerHTML = `
-          <img src="https://drive.google.com/thumbnail?id=${file.id}&sz=w200" 
-               style="width:100%;height:80%;object-fit:cover;" 
-               onerror="this.style.display='none'" />
-          <div style="font-size:0.65rem;color:var(--muted);padding:4px;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;width:100%;">${file.name}</div>`;
+          <div style="width:100%;padding-top:100%;position:relative;overflow:hidden;">
+            <img src="https://drive.google.com/thumbnail?id=${file.id}&sz=w200"
+                 style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"
+                 onerror="this.parentElement.innerHTML='<div style=\'display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:2rem;\'>🖼️</div>'" />
+          </div>
+          <div style="font-size:0.68rem;color:var(--muted);padding:5px 6px;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;width:100%;box-sizing:border-box;">${file.name}</div>`;
         thumb.addEventListener('click', () => importDriveFile(file));
         driveGallery.appendChild(thumb);
       }
