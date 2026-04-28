@@ -99,6 +99,64 @@ function extractDriveFileId(url) {
   return null;
 }
 
+// ── List files from public Drive folder (no API key needed) ─────────────────
+app.get('/api/drive-list', async (req, res) => {
+  const folderId = process.env.DRIVE_FOLDER_ID;
+  if (!folderId) return res.status(400).json({ error: 'DRIVE_FOLDER_ID not set' });
+
+  const url = `https://drive.google.com/drive/folders/${folderId}`;
+  const options = {
+    hostname: 'drive.google.com',
+    path: `/drive/folders/${folderId}`,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'text/html',
+    }
+  };
+
+  https.get(options, (response) => {
+    let html = '';
+    response.on('data', chunk => html += chunk);
+    response.on('end', () => {
+      try {
+        // Extract file entries from Drive's embedded JSON data
+        // Drive embeds file data in a pattern like ["FILE_ID","NAME","mimeType",...]
+        const imageTypes = ['image/jpeg','image/jpg','image/png','image/gif','image/webp'];
+        const files = [];
+        const seen = new Set();
+
+        // Pattern to find file IDs and names in the embedded JSON
+        const pattern = /\["([-\w]{25,})"(?:,null)*,"([^"]+)","(image\/[^"]+)"/g;
+        let match;
+        while ((match = pattern.exec(html)) !== null) {
+          const [, id, name, mimeType] = match;
+          if (!seen.has(id) && imageTypes.includes(mimeType)) {
+            seen.add(id);
+            files.push({ id, name, mimeType });
+          }
+        }
+
+        if (files.length > 0) {
+          return res.json({ files });
+        }
+
+        // Fallback: extract any file IDs referenced in thumbnail URLs
+        const thumbPattern = /thumbnail\?id=([-\w]{25,})/g;
+        const namePattern = /"([^"]+\.(jpg|jpeg|png|gif|webp))"/gi;
+        const ids = [];
+        while ((match = thumbPattern.exec(html)) !== null) {
+          if (!seen.has(match[1])) { seen.add(match[1]); ids.push(match[1]); }
+        }
+        const fallbackFiles = ids.map((id, i) => ({ id, name: `image-${i+1}.jpg`, mimeType: 'image/jpeg' }));
+        res.json({ files: fallbackFiles });
+      } catch (err) {
+        res.status(500).json({ error: 'Could not parse folder: ' + err.message });
+      }
+    });
+  }).on('error', err => res.status(500).json({ error: err.message }));
+});
+
 // ── Direct image upload endpoint ──────────────────────────────────────────────
 app.post('/api/upload-image', async (req, res) => {
   const { base64_data, filename } = req.body;
@@ -121,11 +179,10 @@ app.post('/api/upload-image', async (req, res) => {
 
 // ── Google Drive image fetch + upload endpoint ────────────────────────────────
 app.post('/api/drive-image', async (req, res) => {
-  const { driveUrl, filename } = req.body;
-  if (!driveUrl) return res.status(400).json({ error: 'Missing Drive URL' });
-
-  const fileId = extractDriveFileId(driveUrl);
-  if (!fileId) return res.status(400).json({ error: 'Could not extract file ID from URL' });
+  const { driveUrl, fileId: directFileId, filename } = req.body;
+  
+  const fileId = directFileId || (driveUrl ? extractDriveFileId(driveUrl) : null);
+  if (!fileId) return res.status(400).json({ error: 'Missing file ID or Drive URL' });
 
   const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
   const safeFilename = filename || `drive-image-${Date.now()}.jpg`;

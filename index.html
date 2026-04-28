@@ -210,18 +210,15 @@
       </svg>
     </button>
 
-    <!-- Drive URL modal -->
-    <div id="drive-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:100%;max-width:480px;">
-        <h3 style="margin-bottom:8px;font-size:1rem;">Import from Google Drive</h3>
-        <p style="color:var(--muted);font-size:0.85rem;margin-bottom:16px;">Open your Drive folder, right-click an image → <strong>Share → Copy link</strong>, then paste it below.</p>
-        <input id="drive-url-input" type="text" placeholder="Paste Google Drive link here…"
-          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;outline:none;margin-bottom:12px;" />
-        <input id="drive-filename-input" type="text" placeholder="Filename to save as (e.g. ring-gold.jpg)"
-          style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;outline:none;margin-bottom:16px;" />
-        <div style="display:flex;gap:10px;">
-          <button id="drive-import-btn" style="flex:1;background:var(--green);color:#000;border:none;padding:10px;border-radius:var(--radius);font-weight:600;cursor:pointer;">Import Image</button>
-          <button id="drive-cancel-btn" style="flex:1;background:none;border:1px solid var(--border);color:var(--text);padding:10px;border-radius:var(--radius);cursor:pointer;">Cancel</button>
+    <!-- Drive gallery modal -->
+    <div id="drive-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:200;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:100%;max-width:580px;max-height:80vh;display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+          <h3 style="font-size:1rem;">📁 Drive Folder</h3>
+          <button id="drive-cancel-btn" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;">✕</button>
+        </div>
+        <div id="drive-gallery" style="overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;min-height:100px;">
+          <div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:20px;">Loading images…</div>
         </div>
         <div id="drive-status" style="margin-top:12px;font-size:0.85rem;color:var(--muted);display:none;"></div>
       </div>
@@ -500,66 +497,79 @@
 
   let currentToolDiv = null;
 
-  // ── Google Drive import ──────────────────────────────────────────────────
-  const driveBtn       = document.getElementById('drive-btn');
-  const driveModal     = document.getElementById('drive-modal');
-  const driveUrlInput  = document.getElementById('drive-url-input');
-  const driveFilename  = document.getElementById('drive-filename-input');
-  const driveImport    = document.getElementById('drive-import-btn');
-  const driveCancel    = document.getElementById('drive-cancel-btn');
-  const driveStatus    = document.getElementById('drive-status');
+  // ── Google Drive gallery ─────────────────────────────────────────────────
+  const driveBtn    = document.getElementById('drive-btn');
+  const driveModal  = document.getElementById('drive-modal');
+  const driveCancel = document.getElementById('drive-cancel-btn');
+  const driveGallery= document.getElementById('drive-gallery');
+  const driveStatus = document.getElementById('drive-status');
 
-  driveBtn.addEventListener('click', () => {
+  driveBtn.addEventListener('click', async () => {
     driveModal.style.display = 'flex';
-    driveUrlInput.focus();
+    loadDriveFiles();
   });
+
   driveCancel.addEventListener('click', () => {
     driveModal.style.display = 'none';
-    driveUrlInput.value = '';
-    driveFilename.value = '';
     driveStatus.style.display = 'none';
   });
 
-  driveImport.addEventListener('click', async () => {
-    const url = driveUrlInput.value.trim();
-    const filename = driveFilename.value.trim() || `drive-image-${Date.now()}.jpg`;
-    if (!url) return;
+  async function loadDriveFiles() {
+    driveGallery.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:20px;">Loading images…</div>';
+    try {
+      const res = await fetch('/api/drive-list', { headers: { 'x-password': password } });
+      const data = await res.json();
+      if (!data.files || data.files.length === 0) {
+        driveGallery.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:20px;">No images found in folder.</div>';
+        return;
+      }
+      driveGallery.innerHTML = '';
+      for (const file of data.files) {
+        const thumb = document.createElement('div');
+        thumb.style.cssText = 'cursor:pointer;border:2px solid var(--border);border-radius:8px;overflow:hidden;aspect-ratio:1;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;';
+        thumb.innerHTML = `
+          <img src="https://drive.google.com/thumbnail?id=${file.id}&sz=w200" 
+               style="width:100%;height:80%;object-fit:cover;" 
+               onerror="this.style.display='none'" />
+          <div style="font-size:0.65rem;color:var(--muted);padding:4px;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;width:100%;">${file.name}</div>`;
+        thumb.addEventListener('click', () => importDriveFile(file));
+        driveGallery.appendChild(thumb);
+      }
+    } catch (err) {
+      driveGallery.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--error);padding:20px;">Error: ${err.message}</div>`;
+    }
+  }
 
+  async function importDriveFile(file) {
     driveStatus.style.display = 'block';
     driveStatus.style.color = 'var(--muted)';
-    driveStatus.textContent = '⏳ Downloading from Drive and uploading to server…';
-    driveImport.disabled = true;
-
+    driveStatus.textContent = `⏳ Uploading ${file.name} to server…`;
     try {
       const res = await fetch('/api/drive-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-password': password },
-        body: JSON.stringify({ driveUrl: url, filename }),
+        body: JSON.stringify({ fileId: file.id, filename: file.name }),
       });
       const data = await res.json();
       if (data.success) {
         driveStatus.style.color = 'var(--green)';
-        driveStatus.textContent = `✅ Uploaded to ${data.url}`;
-        // Auto-send message telling coworker about the image
+        driveStatus.textContent = `✅ Uploaded as ${data.url}`;
         setTimeout(() => {
           driveModal.style.display = 'none';
-          driveUrlInput.value = '';
-          driveFilename.value = '';
           driveStatus.style.display = 'none';
-          input.value = `Image has been uploaded to the server at: ${data.path} (URL: ${data.url}). Please insert it into the appropriate place on the page with a proper <img> tag.`;
+          input.value = `Image "${file.name}" has been uploaded to the server at: ${data.path} (URL: ${data.url}). Please insert it into the appropriate place on the page with a proper <img> tag.`;
           input.dispatchEvent(new Event('input'));
           input.focus();
         }, 1200);
       } else {
         driveStatus.style.color = 'var(--error)';
-        driveStatus.textContent = `❌ Error: ${data.error}`;
+        driveStatus.textContent = `❌ ${data.error}`;
       }
     } catch (err) {
       driveStatus.style.color = 'var(--error)';
       driveStatus.textContent = `❌ ${err.message}`;
     }
-    driveImport.disabled = false;
-  });
+  }
 </script>
 </body>
 </html>
