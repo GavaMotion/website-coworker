@@ -7,7 +7,7 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
 app.use(express.static('.'));
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -62,28 +62,38 @@ async function writeRemoteFile(remotePath, content) {
   }
 }
 
-async function uploadImage(base64Data, remotePath) {
+// ── Direct image upload endpoint (bypasses Groq entirely) ────────────────────
+app.post('/api/upload-image', async (req, res) => {
+  const { base64_data, filename } = req.body;
+  if (!base64_data || !filename) return res.status(400).json({ error: 'Missing data' });
+
   const ssh = new NodeSSH();
   try {
     await ssh.connect(getSSHConfig());
-    const tmpFile = path.join(os.tmpdir(), `coworker_img_${Date.now()}`);
-    fs.writeFileSync(tmpFile, Buffer.from(base64Data, 'base64'));
+    const remotePath = `${process.env.SITE_ROOT}/images/${filename}`;
+    // Ensure images directory exists
+    await ssh.execCommand(`mkdir -p ${process.env.SITE_ROOT}/images`);
+    const tmpFile = path.join(os.tmpdir(), filename);
+    fs.writeFileSync(tmpFile, Buffer.from(base64_data, 'base64'));
     await ssh.putFile(tmpFile, remotePath);
     fs.unlinkSync(tmpFile);
     ssh.dispose();
-    return { success: true, path: remotePath };
+    res.json({ success: true, path: remotePath, url: `/images/${filename}` });
   } catch (err) {
-    return { error: err.message, success: false };
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
 const tools = [
-  { type: 'function', function: { name: 'run_ssh_command', description: 'Run a shell command on the Hostinger server via SSH.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'upload_image', description: 'Upload a base64-encoded image to the server.', parameters: { type: 'object', properties: { base64_data: { type: 'string' }, remote_path: { type: 'string' } }, required: ['base64_data', 'remote_path'] } } },
+  { type: 'function', function: { name: 'run_ssh_command', description: 'Run a shell command on the Hostinger server via SSH.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Shell command to execute' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first with run_ssh_command.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Full absolute path on the server' }, content: { type: 'string', description: 'Full file content' } }, required: ['path', 'content'] } } },
 ];
 
-const SYSTEM_PROMPT = `You are a Website Coworker with SSH access to a Hostinger web server. Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}. Update HTML pages, upload images, manage files. Always back up files before editing, verify changes after uploading, never delete files unless told to, report what changed after every task.`;
+const SYSTEM_PROMPT = `You are a Website Coworker — an autonomous AI agent with SSH access to a Hostinger web server.
+Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}
+Your responsibilities: update HTML pages, manage files. 
+Rules: always back up files before editing (cp file.html file.html.bak), verify changes after uploading, never delete files unless told to, report what changed after every task.
+Note: images are uploaded directly to the server before you receive the message. When the user says an image was uploaded, it already exists at the stated path — just insert the correct <img> tag into the HTML.`;
 
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
@@ -92,9 +102,8 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-// Keep only the last 10 messages to avoid token limit errors
-const trimmed = messages.slice(-10);
-let currentMessages = [
+  const trimmed = messages.slice(-10);
+  let currentMessages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...trimmed.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
   ];
@@ -123,7 +132,6 @@ let currentMessages = [
         let result;
         if (name === 'run_ssh_command') result = await runSSHCommand(args.command);
         else if (name === 'write_remote_file') result = await writeRemoteFile(args.path, args.content);
-        else if (name === 'upload_image') result = await uploadImage(args.base64_data, args.remote_path);
 
         send({ type: 'tool_result', name, result });
         currentMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify(result) });

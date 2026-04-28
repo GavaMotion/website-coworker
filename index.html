@@ -393,10 +393,24 @@
     previewArea.style.display = 'none';
     fileInput.value = '';
 
-    // Build user message for API
+    // Build user message — upload image directly first, then just tell AI the path
     let userContent = text;
     if (imgDataUrl) {
-      userContent = `${text}\n\n[Image attached: ${imgName}]\n[base64: ${imgDataUrl.split(',')[1]}]`;
+      try {
+        const uploadRes = await fetch('/api/upload-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-password': password },
+          body: JSON.stringify({ base64_data: imgDataUrl.split(',')[1], filename: imgName }),
+        });
+        const uploadData = await uploadRes.json();
+        if (uploadData.success) {
+          userContent = `${text}\n\nI just uploaded an image to the server at: ${uploadData.path} (URL: ${uploadData.url}). Please insert it into the appropriate place on the page with a proper <img> tag.`;
+        } else {
+          userContent = `${text}\n\n[Image upload failed: ${uploadData.error}]`;
+        }
+      } catch (err) {
+        userContent = `${text}\n\n[Image upload error: ${err.message}]`;
+      }
     }
 
     history.push({ role: 'user', content: userContent });
