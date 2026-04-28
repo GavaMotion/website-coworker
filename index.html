@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Website Coworker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f12;
+      --surface:   #141720;
+      --border:    #1f2433;
+      --green:     #00ff88;
+      --green-dim: #00c96a;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --user-bg:   #1a2744;
+      --tool-bg:   #0f1a12;
+      --tool-border:#1a3a22;
+      --error:     #ff4d6d;
+      --radius:    12px;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', sans-serif; }
+
+    /* ── Lock screen ── */
+    #lock {
+      position: fixed; inset: 0; background: var(--bg);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 24px; z-index: 100; padding: 24px;
+    }
+    #lock h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.02em; }
+    #lock h1 span { color: var(--green); }
+    #lock p { color: var(--muted); font-size: 0.9rem; }
+    #lock-form { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 320px; }
+    #lock-input {
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 12px 16px; border-radius: var(--radius);
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.95rem; outline: none;
+      transition: border-color 0.2s;
+    }
+    #lock-input:focus { border-color: var(--green); }
+    #lock-btn {
+      background: var(--green); color: #000; font-weight: 600; border: none;
+      padding: 12px; border-radius: var(--radius); cursor: pointer;
+      font-family: 'IBM Plex Sans', sans-serif; font-size: 0.95rem;
+      transition: opacity 0.2s;
+    }
+    #lock-btn:hover { opacity: 0.85; }
+    #lock-error { color: var(--error); font-size: 0.85rem; text-align: center; display: none; }
+
+    /* ── App shell ── */
+    #app { display: none; flex-direction: column; height: 100vh; }
+
+    header {
+      padding: 14px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; background: var(--surface);
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+      box-shadow: 0 0 8px var(--green); flex-shrink: 0;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    header small { color: var(--muted); font-size: 0.8rem; font-family: 'IBM Plex Mono', monospace; margin-left: auto; }
+
+    /* ── Messages ── */
+    #messages {
+      flex: 1; overflow-y: auto; padding: 20px;
+      display: flex; flex-direction: column; gap: 16px;
+      scroll-behavior: smooth;
+    }
+    #messages::-webkit-scrollbar { width: 4px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg { display: flex; flex-direction: column; max-width: 85%; animation: fadeUp 0.25s ease; }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .bubble {
+      padding: 12px 16px; border-radius: var(--radius); line-height: 1.6;
+      font-size: 0.92rem; white-space: pre-wrap; word-break: break-word;
+    }
+    .msg.user .bubble { background: var(--user-bg); border: 1px solid #2a3a6a; }
+    .msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border); }
+
+    .msg-label { font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+
+    /* ── Tool blocks ── */
+    .tool-block {
+      background: var(--tool-bg); border: 1px solid var(--tool-border);
+      border-radius: var(--radius); overflow: hidden; font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.8rem; max-width: 85%; align-self: flex-start;
+      animation: fadeUp 0.25s ease;
+    }
+    .tool-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; background: #0a1a0d; border-bottom: 1px solid var(--tool-border);
+    }
+    .tool-icon { color: var(--green); font-size: 0.75rem; }
+    .tool-name { color: var(--green-dim); font-weight: 500; font-size: 0.78rem; }
+    .tool-body { padding: 10px 12px; color: #94a3b8; max-height: 200px; overflow-y: auto; }
+    .tool-body.cmd { color: #e2e8f0; }
+    .tool-result-ok { color: var(--green-dim); }
+    .tool-result-err { color: var(--error); }
+
+    /* ── Typing indicator ── */
+    .typing { display: flex; gap: 4px; padding: 14px 16px; align-items: center; }
+    .typing span {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+      animation: blink 1.2s ease-in-out infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%,80%,100%{transform:scale(1);opacity:0.4} 40%{transform:scale(1.3);opacity:1} }
+
+    /* ── Input bar ── */
+    #input-area {
+      border-top: 1px solid var(--border); background: var(--surface);
+      padding: 12px 16px; display: flex; gap: 10px; align-items: flex-end;
+    }
+    #msg-input {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 10px 14px; border-radius: var(--radius);
+      font-family: 'IBM Plex Sans', sans-serif; font-size: 0.92rem;
+      resize: none; outline: none; max-height: 120px; line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+    #msg-input:focus { border-color: var(--green); }
+    #msg-input::placeholder { color: var(--muted); }
+
+    .icon-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0;
+    }
+    .icon-btn:hover { border-color: var(--green); color: var(--green); }
+
+    #send-btn {
+      background: var(--green); border: none; color: #000;
+      width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: opacity 0.2s;
+    }
+    #send-btn:hover { opacity: 0.85; }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #file-input { display: none; }
+
+    /* ── Image preview ── */
+    #image-preview {
+      display: none; padding: 10px 16px 0;
+      background: var(--surface); border-top: 1px solid var(--border);
+    }
+    #image-preview img { height: 60px; border-radius: 8px; border: 1px solid var(--border); }
+    #clear-img { background: none; border: none; color: var(--error); cursor: pointer; font-size: 1.1rem; margin-left: 8px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+
+<!-- Lock screen -->
+<div id="lock">
+  <div>
+    <h1>Website <span>Coworker</span></h1>
+    <p style="margin-top:6px">Enter your password to continue</p>
+  </div>
+  <div id="lock-form">
+    <input id="lock-input" type="password" placeholder="Password" autocomplete="current-password" />
+    <button id="lock-btn">Unlock</button>
+    <div id="lock-error">Wrong password. Try again.</div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <header>
+    <div class="status-dot"></div>
+    <h1>Website Coworker</h1>
+    <small id="host-label"></small>
+  </header>
+
+  <div id="messages">
+    <!-- Welcome message injected by JS -->
+  </div>
+
+  <div id="image-preview">
+    <img id="preview-img" src="" alt="preview" />
+    <button id="clear-img" title="Remove image">✕</button>
+  </div>
+
+  <div id="input-area">
+    <label class="icon-btn" for="file-input" title="Attach image">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+        <polyline points="21 15 16 10 5 21"/>
+      </svg>
+    </label>
+    <input type="file" id="file-input" accept="image/*" />
+
+    <textarea id="msg-input" placeholder="Tell your coworker what to update…" rows="1"></textarea>
+
+    <button id="send-btn" title="Send">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+  let password = '';
+  let history = [];
+  let pendingImage = null;
+  let busy = false;
+
+  // ── Lock screen ──────────────────────────────────────────────────────────
+  const lockEl = document.getElementById('lock');
+  const appEl  = document.getElementById('app');
+
+  async function tryUnlock() {
+    const pw = document.getElementById('lock-input').value.trim();
+    if (!pw) return;
+    // Quick ping to verify password
+    const res = await fetch('/api/ping', { headers: { 'x-password': pw } });
+    if (res.ok) {
+      password = pw;
+      lockEl.style.display = 'none';
+      appEl.style.display = 'flex';
+      addWelcome();
+    } else {
+      document.getElementById('lock-error').style.display = 'block';
+    }
+  }
+
+  document.getElementById('lock-btn').addEventListener('click', tryUnlock);
+  document.getElementById('lock-input').addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
+
+  // ── Welcome message ──────────────────────────────────────────────────────
+  function addWelcome() {
+    addAssistantBubble("👋 Hey! I'm your Website Coworker.\n\nTell me what you'd like changed on the site — I'll fetch, edit, upload and verify it for you.\n\nYou can also attach an image using the 📎 button.");
+  }
+
+  // ── Message rendering ────────────────────────────────────────────────────
+  const messagesEl = document.getElementById('messages');
+
+  function scrollBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addUserBubble(text, imgSrc) {
+    const div = document.createElement('div');
+    div.className = 'msg user';
+    div.innerHTML = `<div class="msg-label">You</div><div class="bubble">${escHtml(text)}${imgSrc ? `\n<img src="${imgSrc}" style="max-width:200px;border-radius:8px;margin-top:8px;display:block" />` : ''}</div>`;
+    messagesEl.appendChild(div);
+    scrollBottom();
+  }
+
+  function addAssistantBubble(text) {
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.innerHTML = `<div class="msg-label">Coworker</div><div class="bubble">${escHtml(text)}</div>`;
+    messagesEl.appendChild(div);
+    scrollBottom();
+    return div.querySelector('.bubble');
+  }
+
+  function addTyping() {
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.id = 'typing';
+    div.innerHTML = `<div class="msg-label">Coworker</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;
+    messagesEl.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function removeTyping() {
+    document.getElementById('typing')?.remove();
+  }
+
+  function addToolBlock(name, input) {
+    const div = document.createElement('div');
+    div.className = 'tool-block';
+    const cmdText = name === 'run_ssh_command' ? input.command
+      : name === 'write_remote_file' ? `Writing → ${input.path}`
+      : `Uploading image → ${input.remote_path}`;
+    div.innerHTML = `
+      <div class="tool-header">
+        <span class="tool-icon">⚡</span>
+        <span class="tool-name">${escHtml(name)}</span>
+      </div>
+      <div class="tool-body cmd">${escHtml(cmdText)}</div>`;
+    messagesEl.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function appendToolResult(toolDiv, result) {
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    if (result.error) {
+      body.classList.add('tool-result-err');
+      body.textContent = `✗ ${result.error}`;
+    } else if (result.stdout) {
+      body.classList.add('tool-result-ok');
+      body.textContent = result.stdout.slice(0, 400);
+    } else {
+      body.classList.add('tool-result-ok');
+      body.textContent = '✓ Done';
+    }
+    toolDiv.appendChild(body);
+    scrollBottom();
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Image handling ────────────────────────────────────────────────────────
+  const fileInput    = document.getElementById('file-input');
+  const previewArea  = document.getElementById('image-preview');
+  const previewImg   = document.getElementById('preview-img');
+  const clearImgBtn  = document.getElementById('clear-img');
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      pendingImage = { dataUrl: e.target.result, name: file.name };
+      previewImg.src = e.target.result;
+      previewArea.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+  });
+
+  clearImgBtn.addEventListener('click', () => {
+    pendingImage = null;
+    previewArea.style.display = 'none';
+    fileInput.value = '';
+  });
+
+  // ── Send ─────────────────────────────────────────────────────────────────
+  const input   = document.getElementById('msg-input');
+  const sendBtn = document.getElementById('send-btn');
+
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  sendBtn.addEventListener('click', sendMessage);
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if ((!text && !pendingImage) || busy) return;
+
+    busy = true;
+    sendBtn.disabled = true;
+
+    const imgDataUrl = pendingImage?.dataUrl || null;
+    const imgName    = pendingImage?.name || 'image.jpg';
+
+    addUserBubble(text || '(image attached)', imgDataUrl);
+    input.value = '';
+    input.style.height = 'auto';
+    pendingImage = null;
+    previewArea.style.display = 'none';
+    fileInput.value = '';
+
+    // Build user message for API
+    let userContent = text;
+    if (imgDataUrl) {
+      userContent = `${text}\n\n[Image attached: ${imgName}]\n[base64: ${imgDataUrl.split(',')[1]}]`;
+    }
+
+    history.push({ role: 'user', content: userContent });
+
+    const typingEl = addTyping();
+    let currentBubble = null;
+    let fullText = '';
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-password': password },
+        body: JSON.stringify({ messages: history }),
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          let evt;
+          try { evt = JSON.parse(raw); } catch { continue; }
+
+          if (evt.type === 'text') {
+            removeTyping();
+            fullText += evt.text;
+            if (currentBubble) {
+              currentBubble.textContent = fullText;
+            } else {
+              currentBubble = addAssistantBubble(fullText);
+            }
+          } else if (evt.type === 'tool_start') {
+            removeTyping();
+            currentToolDiv = addToolBlock(evt.name, evt.input);
+          } else if (evt.type === 'tool_result') {
+            if (currentToolDiv) appendToolResult(currentToolDiv, evt.result);
+            addTyping();
+          } else if (evt.type === 'done') {
+            removeTyping();
+          } else if (evt.type === 'error') {
+            removeTyping();
+            addAssistantBubble(`⚠️ Error: ${evt.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      removeTyping();
+      addAssistantBubble(`⚠️ Connection error: ${err.message}`);
+    }
+
+    if (fullText) history.push({ role: 'assistant', content: fullText });
+    busy = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+
+  let currentToolDiv = null;
+</script>
+</body>
+</html>
