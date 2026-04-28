@@ -1,5 +1,5 @@
 const express = require('express');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 const { NodeSSH } = require('node-ssh');
 const fs = require('fs');
 const os = require('os');
@@ -10,9 +10,8 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('.'));
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ── Auth middleware ───────────────────────────────────────────────────────────
 app.use('/api', (req, res, next) => {
   if (req.headers['x-password'] !== process.env.APP_PASSWORD) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -20,10 +19,8 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// ── Ping ─────────────────────────────────────────────────────────────────────
 app.get('/api/ping', (req, res) => res.json({ ok: true }));
 
-// ── SSH helpers ───────────────────────────────────────────────────────────────
 function getSSHConfig() {
   const config = {
     host: process.env.SSH_HOST,
@@ -80,132 +77,55 @@ async function uploadImage(base64Data, remotePath) {
   }
 }
 
-// ── Gemini tool definitions ───────────────────────────────────────────────────
 const tools = [
-  {
-    functionDeclarations: [
-      {
-        name: 'run_ssh_command',
-        description: 'Run a shell command on the Hostinger server via SSH. Use for reading files, listing directories, making backups, and in-place edits.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            command: { type: 'STRING', description: 'Shell command to execute on the server' },
-          },
-          required: ['command'],
-        },
-      },
-      {
-        name: 'write_remote_file',
-        description: 'Write or overwrite a file on the server. Always back up the original first.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            path:    { type: 'STRING', description: 'Full absolute path on the server' },
-            content: { type: 'STRING', description: 'Full file content to write'       },
-          },
-          required: ['path', 'content'],
-        },
-      },
-      {
-        name: 'upload_image',
-        description: 'Upload a base64-encoded image to the server.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            base64_data: { type: 'STRING', description: 'Base64 image data (no data URI prefix)' },
-            remote_path: { type: 'STRING', description: 'Full absolute path on the server'       },
-          },
-          required: ['base64_data', 'remote_path'],
-        },
-      },
-    ],
-  },
+  { type: 'function', function: { name: 'run_ssh_command', description: 'Run a shell command on the Hostinger server via SSH.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'write_remote_file', description: 'Write or overwrite a file on the server. Always back up first.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'upload_image', description: 'Upload a base64-encoded image to the server.', parameters: { type: 'object', properties: { base64_data: { type: 'string' }, remote_path: { type: 'string' } }, required: ['base64_data', 'remote_path'] } } },
 ];
 
-const SYSTEM_INSTRUCTION = `You are a Website Coworker — an autonomous AI agent with SSH access to a Hostinger web server.
+const SYSTEM_PROMPT = `You are a Website Coworker with SSH access to a Hostinger web server. Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}. Update HTML pages, upload images, manage files. Always back up files before editing, verify changes after uploading, never delete files unless told to, report what changed after every task.`;
 
-Site root: ${process.env.SITE_ROOT || '/home/user/public_html'}
-
-Your responsibilities:
-- Update HTML pages on request
-- Upload and insert images
-- Manage files and directories on the server
-
-Rules you always follow:
-1. Before editing any file, back it up: cp file.html file.html.bak
-2. After uploading, verify by reading the file back
-3. Never delete files unless explicitly told to
-4. Match existing code style and CSS framework
-5. After every task, report: what changed, which files, and the live URL path
-6. If a request is ambiguous, ask before acting`;
-
-// ── Chat endpoint ─────────────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
-
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-
   const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-  // Convert history to Gemini format
-  const history = messages.slice(0, -1).map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
-
-  const lastMessage = messages[messages.length - 1].content;
+  let currentMessages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+  ];
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: SYSTEM_INSTRUCTION,
-      tools,
-    });
-
-    const chat = model.startChat({ history });
-
-    let response = await chat.sendMessage(lastMessage);
-
-    // Agentic loop — keep going until no more tool calls
     while (true) {
-      const candidate = response.response.candidates[0];
-      const parts = candidate.content.parts;
+      const response = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: currentMessages,
+        tools,
+        tool_choice: 'auto',
+        max_tokens: 4096,
+      });
 
-      // Send any text parts to the UI
-      for (const part of parts) {
-        if (part.text) {
-          send({ type: 'text', text: part.text });
-        }
-      }
+      const message = response.choices[0].message;
+      if (message.content) send({ type: 'text', text: message.content });
+      if (!message.tool_calls || message.tool_calls.length === 0) break;
 
-      // Find function calls
-      const fnCalls = parts.filter(p => p.functionCall);
-      if (fnCalls.length === 0) break;
+      currentMessages.push(message);
 
-      // Execute each tool call
-      const fnResponses = [];
-      for (const part of fnCalls) {
-        const { name, args } = part.functionCall;
+      for (const toolCall of message.tool_calls) {
+        const name = toolCall.function.name;
+        const args = JSON.parse(toolCall.function.arguments);
         send({ type: 'tool_start', name, input: args });
 
         let result;
-        if (name === 'run_ssh_command') {
-          result = await runSSHCommand(args.command);
-        } else if (name === 'write_remote_file') {
-          result = await writeRemoteFile(args.path, args.content);
-        } else if (name === 'upload_image') {
-          result = await uploadImage(args.base64_data, args.remote_path);
-        }
+        if (name === 'run_ssh_command') result = await runSSHCommand(args.command);
+        else if (name === 'write_remote_file') result = await writeRemoteFile(args.path, args.content);
+        else if (name === 'upload_image') result = await uploadImage(args.base64_data, args.remote_path);
 
         send({ type: 'tool_result', name, result });
-        fnResponses.push({ functionResponse: { name, response: result } });
+        currentMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify(result) });
       }
-
-      // Send tool results back to Gemini and continue
-      response = await chat.sendMessage(fnResponses);
     }
   } catch (err) {
     send({ type: 'error', message: err.message });
@@ -215,7 +135,5 @@ app.post('/api/chat', async (req, res) => {
   res.end();
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌐 Website Coworker running on http://localhost:${PORT}`);
-});
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`Website Coworker running on http://localhost:${PORT}`));
